@@ -158,10 +158,15 @@ make_zarr_fixture <- function(dir = file.path(tempdir(),
     # blosc-compressed via Rarr so the real decompression path runs.
     # F order: Rarr's writer round-trips F correctly (its C-order write
     # is transposed on disk); the reader under test handles both orders.
+    # Rarr 2.0 writes zarr v3 by default; Xenium archives are v2.
     p_cs <- file.path(croot, "cell_summary")
-    Rarr::create_empty_zarr_array(p_cs, dim = dim(cs),
+    cs_args <- list(p_cs, dim = dim(cs),
         chunk_dim = c(7L, 8L), data_type = "double", order = "F",
         compressor = Rarr::use_blosc(), fill_value = 0)
+    if ("zarr_version" %in% names(formals(Rarr::create_empty_zarr_array))) {
+        cs_args$zarr_version <- 2L
+    }
+    do.call(Rarr::create_empty_zarr_array, cs_args)
     Rarr::update_zarr_array(p_cs, cs,
         index = list(seq_len(nrow(cs)), seq_len(ncol(cs))))
 
