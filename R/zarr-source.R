@@ -10,7 +10,7 @@
 # that violate this.
 #
 # Blosc/zlib chunk decompression goes through `.zarr_blosc_decompress()`,
-# the single call site of the internal `Rarr:::.decompress_chunk`.
+# the single place Rarr's internal decoders are called.
 #
 # Rarr and zip live in Suggests; `.zarr_open()` is the gate.
 #
@@ -19,14 +19,18 @@
 
 # open / close ####
 
-# Verify the internal Rarr API this layer depends on. Tested against
-# Rarr 1.10.1; the signature is (compressed_chunk, metadata).
+# Verify the internal Rarr API this layer depends on: `.decompress_chunk`
+# in Rarr 1.x (tested with 1.10.1), or the per-codec `codec_<id>_decode`
+# functions that replaced it in Rarr 2.0 (tested with 2.0.1). Both are
+# internal, so a later Rarr release can break this again.
 .zarr_check_rarr <- function() {
     GiottoUtils::package_check("Rarr", repository = "Bioc")
-    if (!is.function(get0(".decompress_chunk", envir = asNamespace("Rarr")))) {
+    ns <- asNamespace("Rarr")
+    if (!is.function(get0(".decompress_chunk", envir = ns)) &&
+        !is.function(get0("codec_blosc_decode", envir = ns))) {
         stop("[zarr] installed Rarr (", utils::packageVersion("Rarr"),
-            ") does not provide the internal `.decompress_chunk` this ",
-            "reader was built against (tested with Rarr 1.10.1). ",
+            ") provides neither the internal `.decompress_chunk` (Rarr 1.x) ",
+            "nor `codec_blosc_decode` (Rarr 2.0) that this reader uses. ",
             "Please report this to the GiottoDisk maintainers.",
             call. = FALSE)
     }
@@ -354,11 +358,23 @@
     out
 }
 
-# Decompress one chunk's raw bytes via Rarr's internal blosc/zlib decoder.
-# THE single call site of `Rarr:::.decompress_chunk` (internal API;
-# existence verified in `.zarr_open()`). Returns raw bytes ready for
-# readBin() reinterpretation.
+# Decompress one chunk's raw bytes via Rarr's internal blosc/zlib decoder:
+# `.decompress_chunk` on Rarr 1.x, `codec_<compressor id>_decode` on Rarr
+# 2.0, which returns the same bytes. Internal API on both; existence is
+# verified in `.zarr_open()`. Returns raw bytes ready for readBin()
+# reinterpretation.
 .zarr_blosc_decompress <- function(raw_bytes, meta, dt) {
+    ns <- asNamespace("Rarr")
+    if (!is.function(get0(".decompress_chunk", envir = ns))) {
+        if (is.null(meta$compressor)) return(raw_bytes)
+        id <- meta$compressor$id
+        decode <- get0(paste0("codec_", id, "_decode"), envir = ns)
+        if (!is.function(decode)) {
+            stop("[zarr] installed Rarr (", utils::packageVersion("Rarr"),
+                ") has no decoder for compressor '", id, "'", call. = FALSE)
+        }
+        return(decode(raw_bytes))
+    }
     base_type <- switch(dt$kind,
         "f" = "float", "i" = "int", "u" = "uint", "b" = "uint",
         "unknown")
@@ -372,7 +388,7 @@
         order = meta$order %||% "C",
         fill_value = meta$fill_value %||% 0
     )
-    Rarr:::.decompress_chunk(raw_bytes, rarr_meta)
+    get(".decompress_chunk", envir = ns)(raw_bytes, rarr_meta)
 }
 
 # Reinterpret decompressed chunk bytes as an R vector per the dtype.
